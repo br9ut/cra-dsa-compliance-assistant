@@ -15,6 +15,7 @@ import { z } from 'zod';
 const index = new Index();
 
 const TOP_K = 6;
+const DOC_NAMES = ['CRA', 'Digitalsikkerhetsloven', 'Digitalsikkerhetsforskriften'];
 
 // Section expansion settings
 const EXPAND_FROM_TOP = 3; // look at the top 3 results for split sections
@@ -40,7 +41,9 @@ How to answer:
 - Answer in the language the user writes in. When you rely on Norwegian text for an English answer, translate it faithfully and keep the Norwegian legal terms in brackets where helpful, e.g. "providers of essential services (tilbydere av samfunnsviktige tjenester)".
 - Be concise and practical: start with a direct answer in one or two sentences, then give the key details as a short list. List every stage, deadline, threshold and responsible party that the retrieved text provides.
 - Prefer Articles and § sections over Recitals. Use Recitals only to explain the purpose or intent behind a provision, and say that they are recitals.
-- You provide information, not legal advice. For decisions about a specific organisation, recommend confirming with legal counsel or the relevant authority.
+- Do not include URLs or markdown links in your answer. The sources panel already links to the official texts.
+- If the user asks about a law that is not one of the three texts (for example NIS2 or GDPR), say clearly that it is outside your sources. You may point to related provisions in the three texts if they are relevant.
+- You provide information, not legal advice. If asked whether a specific organisation is compliant, explain that you cannot assess that, then search and summarise the main obligations that would typically apply, and recommend confirming with legal counsel or the relevant authority.
 - If a question is unrelated to these laws, politely explain what you can help with.`;
 
 export async function POST(req: Request) {
@@ -58,12 +61,17 @@ export async function POST(req: Request) {
           'The Norwegian texts are written in Norwegian, so when searching them, a query in Norwegian (e.g. "hendelsesvarsling", "styringssystem", "risikovurdering") often works best.',
         parameters: z.object({
           query: z.string().describe('A focused search query: the topic, term or sub-question to look up'),
+          // A plain string (not an enum) so an unexpected value such as "NIS2"
+          // cannot crash the request; unknown values are simply ignored.
           document: z
-            .enum(['CRA', 'Digitalsikkerhetsloven', 'Digitalsikkerhetsforskriften'])
+            .string()
             .optional()
-            .describe('Optional: limit the search to one law. Leave empty to search all three.'),
+            .describe(
+              "Optional: limit the search to one law: 'CRA', 'Digitalsikkerhetsloven' or 'Digitalsikkerhetsforskriften'. Leave empty to search all three.",
+            ),
         }),
-        execute: async ({ query, document }) => {
+        execute: async ({ query, document: requested }) => {
+          const document = DOC_NAMES.find((d) => d.toLowerCase() === requested?.trim().toLowerCase());
           const { embedding } = await embed({
             model: openai.embedding('text-embedding-3-small'),
             value: query,
@@ -131,5 +139,12 @@ export async function POST(req: Request) {
     maxSteps: 5,
   });
 
-  return result.toDataStreamResponse();
+  // Log the real error on the server (visible in Vercel → Logs) but show the
+  // user only a generic message, so internal details are never exposed.
+  return result.toDataStreamResponse({
+    getErrorMessage: (error) => {
+      console.error('[chat] stream error:', error);
+      return 'An error occurred.';
+    },
+  });
 }

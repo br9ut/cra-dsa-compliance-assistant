@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, type ReactNode } from 'react';
+import { Fragment, useState, type ReactNode } from 'react';
 import { useChat } from '@ai-sdk/react';
 
 // ---------------------------------------------------------------------------
@@ -58,11 +58,19 @@ const CITATION = /^\[[^\]]*(CRA|Digitalsikkerhets|Article|Recital|Annex|§)[^\]]
 
 function renderInline(text: string): ReactNode[] {
   return text
-    .split(/(\*\*[^*]+\*\*|\[[^\]]+\])/g)
+    .split(/(\*\*[^*]+\*\*|\[[^\]]+\]\(https?:\/\/[^\s)]+\)|\[[^\]]+\])/g)
     .filter(Boolean)
     .map((part, i) => {
       if (part.startsWith('**') && part.endsWith('**')) {
         return <strong key={i}>{part.slice(2, -2)}</strong>;
+      }
+      const link = part.match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/);
+      if (link) {
+        return (
+          <a key={i} href={link[2]} target="_blank" rel="noopener noreferrer" className="text-cyan-700 underline">
+            {link[1]}
+          </a>
+        );
       }
       if (CITATION.test(part)) {
         return (
@@ -185,15 +193,19 @@ function splitSource(src: Source): { label: string; body: string } {
   return { label: `Page ${src.page ?? '?'}`, body: text };
 }
 
+const SOURCES_SHOWN = 8;
+
 function SourcesPanel({ sources }: { sources: Source[] }) {
+  const [showAll, setShowAll] = useState(false);
   if (sources.length === 0) return null;
+  const visible = showAll ? sources : sources.slice(0, SOURCES_SHOWN);
   return (
     <details className="mt-2 w-full max-w-[90%] text-sm text-slate-600 sm:max-w-[85%]">
       <summary className="cursor-pointer select-none font-medium text-slate-700">
         Sources ({sources.length})
       </summary>
       <ul className="mt-2 space-y-2">
-        {sources.map((src, i) => {
+        {visible.map((src, i) => {
           const { label, body } = splitSource(src);
           return (
             <li key={i} className="rounded-lg border border-slate-200 bg-white">
@@ -223,6 +235,15 @@ function SourcesPanel({ sources }: { sources: Source[] }) {
           );
         })}
       </ul>
+      {sources.length > SOURCES_SHOWN && (
+        <button
+          type="button"
+          onClick={() => setShowAll((v) => !v)}
+          className="mt-2 text-xs font-medium text-cyan-700 hover:underline"
+        >
+          {showAll ? 'Show fewer sources' : `Show all ${sources.length} sources`}
+        </button>
+      )}
     </details>
   );
 }
