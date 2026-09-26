@@ -24,12 +24,12 @@ const CORPUS = [
   {
     name: 'Digitalsikkerhetsloven',
     detail: 'Norwegian Digital Security Act · Norwegian',
-    url: 'https://lovdata.no/',
+    url: 'https://lovdata.no/dokument/NL/lov/2023-12-20-108?q=digitalsikkerhetsloven',
   },
   {
     name: 'Digitalsikkerhetsforskriften',
     detail: 'Norwegian Digital Security Regulation · Norwegian',
-    url: 'https://lovdata.no/',
+    url: 'https://lovdata.no/dokument/SF/forskrift/2025-06-20-1131?q=digitalsikkerhetsforskriften',
   },
 ];
 
@@ -79,7 +79,7 @@ function renderInline(text: string): ReactNode[] {
 }
 
 type ListItem = { text: string; sub: string[] };
-type ListBlock = { ordered: boolean; items: ListItem[] };
+type ListBlock = { ordered: boolean; start: number; items: ListItem[] };
 
 function FormattedText({ text }: { text: string }) {
   const blocks: ReactNode[] = [];
@@ -101,7 +101,7 @@ function FormattedText({ text }: { text: string }) {
     ));
     blocks.push(
       list.ordered ? (
-        <ol key={blocks.length} className="list-decimal space-y-1 pl-5">
+        <ol key={blocks.length} start={list.start} className="list-decimal space-y-1 pl-5">
           {items}
         </ol>
       ) : (
@@ -138,19 +138,20 @@ function FormattedText({ text }: { text: string }) {
       } else {
         if (!current || current.ordered) {
           flush();
-          list = { ordered: false, items: [] };
+          list = { ordered: false, start: 1, items: [] };
         }
         (list as ListBlock | null)?.items.push({ text: m[1], sub: [] });
       }
       continue;
     }
-    if ((m = line.match(/^\d+[.)]\s+(.*)$/))) {
+    if ((m = line.match(/^(\d+)[.)]\s+(.*)$/))) {
       const current: ListBlock | null = list;
       if (!current || !current.ordered) {
         flush();
-        list = { ordered: true, items: [] };
+        // Keep the model's numbering even if a blank line split the list
+        list = { ordered: true, start: parseInt(m[1], 10), items: [] };
       }
-      (list as ListBlock | null)?.items.push({ text: m[1], sub: [] });
+      (list as ListBlock | null)?.items.push({ text: m[2], sub: [] });
       continue;
     }
     flush();

@@ -67,7 +67,7 @@ const DOCS: Record<string, DocMeta> = {
     title: 'Lov om digital sikkerhet (digitalsikkerhetsloven)',
     lang: 'no',
     kind: 'no',
-    url: 'https://lovdata.no/', // TODO: paste the exact Lovdata page URL
+    url: 'https://lovdata.no/dokument/NL/lov/2023-12-20-108?q=digitalsikkerhetsloven',
   },
   'digitalsikkerhetsforskriften.pdf': {
     id: 'dsf',
@@ -75,7 +75,7 @@ const DOCS: Record<string, DocMeta> = {
     title: 'Forskrift om digital sikkerhet (digitalsikkerhetsforskriften)',
     lang: 'no',
     kind: 'no',
-    url: 'https://lovdata.no/', // TODO: paste the exact Lovdata page URL
+    url: 'https://lovdata.no/dokument/SF/forskrift/2025-06-20-1131?q=digitalsikkerhetsforskriften'
   },
 };
 
