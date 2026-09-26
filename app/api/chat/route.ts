@@ -16,6 +16,18 @@ const index = new Index();
 
 const TOP_K = 6;
 
+// Section expansion settings
+const EXPAND_FROM_TOP = 3; // look at the top 3 results for split sections
+const MAX_SECTIONS_TO_EXPAND = 2; // expand at most 2 sections per search
+const MAX_PARTS_PER_SECTION = 10; // cap on parts fetched per section
+const PART_TAG = /\[part \d+\/\d+\]/;
+
+const esc = (s: string) => s.replace(/'/g, "\\'");
+const partNo = (text: unknown) => {
+  const m = typeof text === 'string' ? text.match(/\[part (\d+)\/\d+\]/) : null;
+  return m ? parseInt(m[1], 10) : 0;
+};
+
 const SYSTEM_PROMPT = `You are a compliance assistant that answers questions about three legal texts:
 1. CRA – the EU Cyber Resilience Act, Regulation (EU) 2024/2847 (English)
 2. Digitalsikkerhetsloven – the Norwegian Digital Security Act (Norwegian)
@@ -62,7 +74,49 @@ export async function POST(req: Request) {
             includeMetadata: true,
             ...(document ? { filter: `doc = '${document}'` } : {}),
           });
-          return hits.map((h) => ({
+
+          // Section expansion: long Articles / § sections are split into parts.
+          // If one of the top results is such a part, also fetch the other parts
+          // of that section so the model sees the whole provision.
+          const toExpand = new Map<string, { doc: string; section: string }>();
+          for (const h of hits.slice(0, EXPAND_FROM_TOP)) {
+            const text = (h.metadata?.text as string) ?? '';
+            const doc = (h.metadata?.doc as string) ?? '';
+            const section = (h.metadata?.section as string) ?? '';
+            if (doc && section && PART_TAG.test(text)) toExpand.set(`${doc}|${section}`, { doc, section });
+            if (toExpand.size >= MAX_SECTIONS_TO_EXPAND) break;
+          }
+
+          const expanded = await Promise.all(
+            [...toExpand.values()].map(({ doc, section }) =>
+              index.query({
+                vector: embedding,
+                topK: MAX_PARTS_PER_SECTION,
+                includeMetadata: true,
+                filter: `doc = '${esc(doc)}' AND section = '${esc(section)}'`,
+              }),
+            ),
+          );
+
+          // Merge, remove duplicates, and keep parts of the same section in order
+          const seen = new Set<string>();
+          const all = [...hits, ...expanded.flat()].filter((h) => {
+            const id = String(h.id);
+            if (seen.has(id)) return false;
+            seen.add(id);
+            return true;
+          });
+          const keyOf = (h: (typeof all)[number]) => `${h.metadata?.doc}|${h.metadata?.section}`;
+          const best = new Map<string, number>();
+          for (const h of all) best.set(keyOf(h), Math.max(best.get(keyOf(h)) ?? 0, h.score));
+          all.sort((a, b) => {
+            const ka = keyOf(a);
+            const kb = keyOf(b);
+            if (ka !== kb) return (best.get(kb) ?? 0) - (best.get(ka) ?? 0) || ka.localeCompare(kb);
+            return partNo(a.metadata?.text) - partNo(b.metadata?.text);
+          });
+
+          return all.map((h) => ({
             text: (h.metadata?.text as string) ?? '',
             doc: (h.metadata?.doc as string) ?? '',
             section: (h.metadata?.section as string) ?? '',
