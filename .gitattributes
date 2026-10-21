@@ -1,0 +1,2 @@
+# Source PDFs are binary: no line-ending conversion, text diffs or merges
+*.pdf binary

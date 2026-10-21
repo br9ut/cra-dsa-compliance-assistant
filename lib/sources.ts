@@ -42,7 +42,7 @@ export type Source = {
   batch: number;
 };
 
-export const ACTIVE_BATCH = 1;
+export const ACTIVE_BATCH = 2;
 
 export const SOURCES: Source[] = [
   // ---- Batch 0: original corpus -------------------------------------------
@@ -149,7 +149,7 @@ export const SOURCES: Source[] = [
     url: 'https://lovdata.no/dokument/NL/lov/2018-06-01-24',
     description: 'Norwegian National Security Act',
     scopeNote:
-      'Sikkerhetsloven: never say or imply that an organisation is subject to sikkerhetsloven without first retrieving the scope provisions (§ 1-2 and § 1-3). Under the text, the Act applies directly to state, county and municipal bodies and to suppliers in security-graded procurements (chapter 9). Other organisations, including most private companies, are covered only if a ministry (or NSM) has designated them by an individual decision (vedtak) under § 1-3. If the user has not said whether such a decision exists, say that applicability depends on it.',
+      'Sikkerhetsloven: never say or imply that an organisation is subject to sikkerhetsloven without first retrieving the scope provisions (§ 1-2 and § 1-3). For any question about who the Act applies to, search sikkerhetsloven at least twice: once for "hvem loven gjelder for" (§ 1-2) and once for "vedtak om at loven skal gjelde for andre virksomheter" (§ 1-3), and cite both. Every such answer must mention the § 1-3 designation route, not only the bodies listed in § 1-2. Under the text, the Act applies directly to state, county and municipal bodies and to suppliers in security-graded procurements (chapter 9). Private suppliers of goods or services in security-graded procurements are covered directly by § 1-2, without any designation decision, so never say that private companies are covered only by designation. Other organisations are covered only if a ministry has designated them by an individual decision (vedtak) under § 1-3. NSM may propose such designations, but the ministry decides. The exception is organisations outside any ministry’s area of responsibility: for them NSM makes the decision, and the ministry handles appeals (§ 1-3, last paragraph). If the user has not said whether such a decision exists, say that applicability depends on it.',
     batch: 2,
   },
   {
@@ -167,6 +167,8 @@ export const SOURCES: Source[] = [
     lastAmendedBy: 'FOR-2019-05-03-560',
     url: 'https://lovdata.no/dokument/SF/forskrift/2018-12-20-2053',
     description: 'Regulation on organisations’ preventive security work under sikkerhetsloven',
+    scopeNote:
+      'Virksomhetsikkerhetsforskriften: chapter 2 (Sikkerhetsstyring, §§ 3–11) sets out the security management system, but most of its sections never use the word "styringssystem". For questions about the security management system, search this regulation for "sikkerhetsstyring" as well as "styringssystem", and cite each section you use.',
     batch: 2,
   },
 

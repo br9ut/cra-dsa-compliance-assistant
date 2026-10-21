@@ -16,7 +16,19 @@ import { ACTIVE_SOURCES, SOURCE_TYPE_LABEL, versionLabel, type SourceType } from
 
 const index = new Index();
 
+// Chat model: gpt-4o-mini unless CHAT_MODEL is set (server-side only, e.g.
+// CHAT_MODEL=gpt-4o for an evaluation run). Embeddings are unaffected.
+const CHAT_MODEL = process.env.CHAT_MODEL?.trim() || 'gpt-4o-mini';
+// Optional, e.g. CHAT_REASONING_EFFORT=none: gpt-6 models only accept function
+// tools on Chat Completions with reasoning switched off
+const CHAT_REASONING_EFFORT = process.env.CHAT_REASONING_EFFORT?.trim();
+
 const TOP_K = 6;
+// Upstash's approximate search can miss the true best matches when asked for
+// few results (measured: 0 of the top 6 for short Norwegian queries such as
+// "varslingsplikt" at 6 and even 50 candidates; exact from 100), so rank 100
+// candidates by id and score, then fetch text only for the best TOP_K
+const CANDIDATES = 100;
 const DOC_NAMES = ACTIVE_SOURCES.map((s) => s.short);
 const SOURCE_TYPES = [...new Set(ACTIVE_SOURCES.map((s) => s.sourceType))];
 
@@ -54,7 +66,7 @@ ${sourceList}
 How to answer:
 - Always call the searchRegulations tool before answering a question about these sources. For comparisons or broad questions, call it several times with focused queries (for example once per law or per topic). Search first and write the answer afterwards; do not announce or describe your searches in the answer.
 - Answer ONLY from the retrieved text. If the retrieved text does not answer the question, say so plainly and suggest how the user could rephrase. Never fill gaps with general knowledge.
-- Cite every key statement inline in square brackets using the source name and section from the source header, for example [CRA – Article 14] or [Digitalsikkerhetsloven – § 2]. Use only sections that appear in the retrieved results. This applies in every language, including answers in Norwegian: a section number in a heading, in the running text or in a closing list of sources is not a citation, so each key statement still needs its own tag in square brackets. Example of a cited line in a Norwegian answer: "- Tilbyderen skal varsle uten unødig opphold [Digitalsikkerhetsloven – § 8]."
+- Cite every key statement inline in square brackets using the source name and section from the source header, for example [CRA – Article 14] or [Digitalsikkerhetsloven – § 2]. Use only sections that appear in the retrieved results, and attach each tag to the provision that actually contains the statement: a detail from one provision (for example a deadline set in a regulation) must never be cited to another. This applies in every language, including answers in Norwegian: a section number in a heading, in the running text or in a closing list of sources is not a citation, so each key statement still needs its own tag in square brackets. Example of a cited line in a Norwegian answer: "- Tilbyderen skal varsle uten unødig opphold [Digitalsikkerhetsloven – § 8]."
 - Answer in the language the user writes in. When you rely on Norwegian text for an English answer, translate it faithfully and keep the Norwegian legal terms in brackets where helpful, e.g. "providers of essential services (tilbydere av samfunnsviktige tjenester)". Norwegian answers use exactly the same citation tags as English ones (på norsk: hver rettslig påstand skal ha en kildehenvisning i hakeparentes, for eksempel [Digitalsikkerhetsloven – § 8]).
 - Be concise and practical: start with a direct answer in one or two sentences, then give the key details as a short list. List every stage, deadline, threshold and responsible party that the retrieved text provides.
 - Prefer Articles and § sections over Recitals. Use Recitals only to explain the purpose or intent behind a provision, and say that they are recitals.`,
@@ -65,13 +77,18 @@ How to answer:
   `- For EU acts, do not state whether they apply in Norway or have been incorporated into the EEA Agreement unless the retrieved text says so.`,
   ...scopeNotes,
   `- Do not include URLs or markdown links in your answer. The sources panel already links to the official texts.
-- If the user asks about a law or document that is not one of these sources (for example NIS2, or the text of the GDPR itself), first call searchRegulations for the same topic (for example "hendelsesvarsling" for incident reporting). Then say clearly in the first sentence that the law is outside your sources and do not describe its content. If the search found related provisions, point to the nearest ones with citations, making clear they are a different law and not a substitute (for example, for NIS2 incident reporting: the reporting duties in digitalsikkerhetsloven § 8 and § 11). Only name sections that appear in the search results. End the answer there (apart from the version line): do not offer to look anything up later, do not suggest rephrasing the question, and do not add any closing advice about the out-of-scope law (for example "consult the NIS2 text or the authorities for its deadlines").
+- If the user asks about a law or document that is not one of these sources (for example NIS2, or the text of the GDPR itself), first call searchRegulations for the same topic (for example "hendelsesvarsling" for incident reporting). Then answer with exactly this template, in the user's language, and nothing else:
+  1. One sentence: "[Law] is outside my sources, so I cannot say what it requires."
+  2. The line "Related provisions in my sources:" followed by bullets. Each bullet states what one retrieved provision says, with its tag. Cite only provisions that appear in the search results. If the search found nothing related, write "None found." instead of bullets.
+  3. The version line.
+  Do not compare these provisions with the out-of-scope law in any way: do not say that they align with, implement, correspond to, resemble, differ from or replace it. Do not describe the out-of-scope law, and do not add advice, suggestions or a closing sentence.
 - You provide information, not legal advice. If asked whether a specific organisation is compliant, explain that you cannot assess that, then search and summarise the main obligations that would typically apply, and recommend confirming with legal counsel or the relevant authority.
 - If a question is unrelated to these sources, politely explain what you can help with.
 
 Final check before you send the answer:
 1. Every sentence or bullet that states what a source says ends with a tag such as [Digitalsikkerhetsloven – § 8], in every language. Section numbers in headings or in a closing source list do not count.
-2. If the question was about a law outside your sources, the last sentence before the version line is about the in-scope provisions you cited, not about the out-of-scope law.`,
+2. Each tag points to the provision that contains that statement.
+3. If the question was about a law outside your sources, the answer follows the out-of-scope template exactly and compares nothing with that law.`,
 ]
   .filter(Boolean)
   .join('\n');
@@ -82,7 +99,8 @@ export async function POST(req: Request) {
   const { messages } = await req.json();
 
   const result = streamText({
-    model: openai('gpt-4o-mini'),
+    model: openai(CHAT_MODEL),
+    ...(CHAT_REASONING_EFFORT ? { providerOptions: { openai: { reasoningEffort: CHAT_REASONING_EFFORT } } } : {}),
     system: SYSTEM_PROMPT,
     messages,
     tools: {
@@ -120,12 +138,17 @@ export async function POST(req: Request) {
             model: openai.embedding('text-embedding-3-small'),
             value: query,
           });
-          const hits = await index.query({
+          const candidates = await index.query({
             vector: embedding,
-            topK: TOP_K,
-            includeMetadata: true,
+            topK: CANDIDATES,
             ...(filter ? { filter } : {}),
           });
+          const top = [...candidates].sort((a, b) => b.score - a.score).slice(0, TOP_K);
+          const fetched = await index.fetch(
+            top.map((h) => String(h.id)),
+            { includeMetadata: true },
+          );
+          const hits = top.map((h, i) => ({ ...h, metadata: fetched[i]?.metadata }));
 
           // Section expansion: long Articles / § sections are split into parts.
           // If one of the top results is such a part, also fetch the other parts

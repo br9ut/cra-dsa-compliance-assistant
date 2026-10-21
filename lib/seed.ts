@@ -83,7 +83,15 @@ type Chunk = {
 // ---------------------------------------------------------------------------
 // 1. Extract text page by page (the starter lost page numbers here)
 // ---------------------------------------------------------------------------
-async function extractPages(filePath: string): Promise<string[]> {
+// Order text items as they appear on the page: top to bottom, then left to
+// right. Lovdata PDFs emit chapter headings at the start of each page's text
+// stream, wherever they are printed, which put §§ under the wrong chapter.
+function byVisualOrder(a: any, b: any): number {
+  const dy = b.transform[5] - a.transform[5];
+  return Math.abs(dy) >= 1 ? dy : a.transform[4] - b.transform[4];
+}
+
+async function extractPages(filePath: string, visualOrder = false): Promise<string[]> {
   const buf = await fs.readFile(filePath);
   const pages: string[] = [];
 
@@ -92,9 +100,14 @@ async function extractPages(filePath: string): Promise<string[]> {
       normalizeWhitespace: false,
       disableCombineTextItems: false,
     });
+    const items = content.items as any[];
+    const rotated = items.some((it) => Math.abs(it.transform[1]) > Math.abs(it.transform[0]));
+    // Page 1 keeps stream order: Lovdata's metadata table prints each value
+    // 6pt above its label, so sorting would separate "Sist endret" from its value
+    if (visualOrder && !rotated && pageData.pageIndex > 0) items.sort(byVisualOrder);
     let lastPos: number | undefined;
     let text = '';
-    for (const item of content.items as any[]) {
+    for (const item of items) {
       const [a, b, , , x, y] = item.transform;
       // Text on rotated pages (e.g. landscape annex tables) runs along the
       // y axis, so a new line shows up as a change in x instead of y
@@ -129,8 +142,14 @@ const NOISE_PATTERNS: RegExp[] = [
 // EUR-Lex consolidated-text amendment markers: ▼B, ▼M1, ►M1 … ◄, ►C1 …
 const CONSOLIDATION_MARKERS = /[▼►]\s*(?:B|[MACR]\d+)\b|◄/g;
 
+// Lovdata's "Kort om loven" box is an encyclopedia summary (Store norske
+// leksikon), not law text, so it is left out of the corpus
+const LOVDATA_SUMMARY_START = /^Kort om loven$/;
+const LOVDATA_SUMMARY_END = /^Kapitteloversikt:?$/;
+
 function toLines(pages: string[]): Line[] {
   const out: Line[] = [];
+  let inSummary = false;
   pages.forEach((pageText, i) => {
     for (const raw of pageText.split('\n')) {
       const text = raw
@@ -140,6 +159,9 @@ function toLines(pages: string[]): Line[] {
         .replace(/\s+/g, ' ')
         .trim();
       if (!text) continue;
+      if (LOVDATA_SUMMARY_START.test(text)) inSummary = true;
+      if (inSummary && LOVDATA_SUMMARY_END.test(text)) inSummary = false;
+      if (inSummary) continue;
       if (NOISE_PATTERNS.some((re) => re.test(text))) continue;
       out.push({ text, page: i + 1 });
     }
@@ -209,6 +231,7 @@ function splitSections(lines: Line[], kind: ParserKind): Section[] {
   let lastPoint: SeqNo = { n: 0, suffix: '' };
   let definitionsOf = ''; // label of the Definitions article being split by point
   let lastPara = 0;
+  let noChapterWraps = false; // a Lovdata chapter heading is always followed directly by a §
 
   const start = (label: string, title: string, type: Section['type'], page: number) => {
     if (current.lines.length) sections.push(current);
@@ -244,6 +267,14 @@ function splitSections(lines: Line[], kind: ParserKind): Section[] {
         }
         continue;
       }
+    }
+    if (noChapterWraps) {
+      // Lines between a chapter heading and the next § are the rest of the heading
+      if (!NO_PARAGRAPH.test(text) && !NO_CHAPTER.test(text) && text.length < 120) {
+        chapter += ` ${text}`;
+        continue;
+      }
+      noChapterWraps = false;
     }
     if (expectTitleRest) {
       expectTitleRest = false;
@@ -309,6 +340,8 @@ function splitSections(lines: Line[], kind: ParserKind): Section[] {
     } else if (kind === 'no') {
       if ((m = text.match(NO_CHAPTER))) {
         chapter = `Kapittel ${m[1].replace(/\s/g, '')}${m[2] ? ` – ${m[2]}` : ''}`;
+        // Table-of-contents entries carry a § range and never wrap into body text
+        noChapterWraps = !text.includes('(§');
         continue;
       }
       if ((m = text.match(NO_PARAGRAPH))) {
@@ -405,7 +438,9 @@ function buildChunks(sections: Section[], doc: Source): { chunks: Chunk[]; dropp
         (version ? ` · ${version}` : '');
       chunks.push({
         id: `${doc.id}-${n++}`,
-        text: `${header}\n${part}`,
+        // The chapter line ("Kapittel 2 – Sikkerhetsstyring") lets broad questions
+        // find every section of a chapter, even ones that never use its key term
+        text: `${header}\n${s.chapter ? `${s.chapter}\n` : ''}${part}`,
         doc: doc.short,
         docTitle: doc.title,
         section: s.label,
@@ -542,7 +577,7 @@ async function main() {
   const versionErrors: string[] = [];
   for (const file of files) {
     const meta = BY_FILE.get(file)!;
-    const pages = await extractPages(path.join(DATA_DIR, file));
+    const pages = await extractPages(path.join(DATA_DIR, file), meta.kind === 'no');
     const lines = toLines(pages);
     const versionError = checkLovdataVersion(meta, lines);
     if (versionError) versionErrors.push(versionError);
