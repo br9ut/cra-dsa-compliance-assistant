@@ -8,3 +8,15 @@ out
 next-env.d.ts
 .DS_Store
 seed-preview.json
+
+# Source PDFs: the repo is public, so only texts whose reuse terms are
+# confirmed are committed. EUR-Lex texts may be reused with attribution
+# (Commission Decision 2011/833/EU); Norwegian laws are not subject to
+# copyright (åndsverkloven § 14). Add a new PDF here once its terms are checked.
+data-pending/
+data/*.pdf
+!data/cra-2024-2847.pdf
+!data/cra-implementing-reg-2025-2392.pdf
+!data/eu-ai-act-consolidated-2026-07-27.pdf
+!data/digitalsikkerhetsloven.pdf
+!data/digitalsikkerhetsforskriften.pdf

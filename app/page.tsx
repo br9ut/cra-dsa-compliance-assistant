@@ -2,6 +2,7 @@
 
 import { Fragment, useState, type ReactNode } from 'react';
 import { useChat } from '@ai-sdk/react';
+import { ACTIVE_SOURCES, SOURCES, SOURCE_TYPE_LABEL, versionLabel, type SourceType } from '@/lib/sources';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -11,27 +12,24 @@ const SEARCH_TOOLS = ['searchRegulations', 'getInformation'];
 const SUGGESTED_QUESTIONS = [
   'When must a manufacturer report an actively exploited vulnerability under the CRA?',
   'Who does the Norwegian Digital Security Act apply to?',
-  'What must a risk assessment include under digitalsikkerhetsforskriften?',
+  'When is an AI system classified as high-risk under the AI Act?',
   'Compare incident reporting in the CRA and the Norwegian Digital Security Regulation.',
 ];
 
-const CORPUS = [
-  {
-    name: 'Cyber Resilience Act',
-    detail: 'Regulation (EU) 2024/2847 · English',
-    url: 'https://eur-lex.europa.eu/eli/reg/2024/2847/oj',
-  },
-  {
-    name: 'Digitalsikkerhetsloven',
-    detail: 'Norwegian Digital Security Act · Norwegian',
-    url: 'https://lovdata.no/dokument/NL/lov/2023-12-20-108?q=digitalsikkerhetsloven',
-  },
-  {
-    name: 'Digitalsikkerhetsforskriften',
-    detail: 'Norwegian Digital Security Regulation · Norwegian',
-    url: 'https://lovdata.no/dokument/SF/forskrift/2025-06-20-1131?q=digitalsikkerhetsforskriften',
-  },
-];
+const LANG_NAME: Record<string, string> = { en: 'English', no: 'Norwegian' };
+
+const CORPUS = ACTIVE_SOURCES.map((s) => ({
+  name: s.short,
+  detail: [
+    s.description,
+    s.sourceType === 'legislation' ? '' : SOURCE_TYPE_LABEL[s.sourceType],
+    versionLabel(s),
+    LANG_NAME[s.lang],
+  ]
+    .filter(Boolean)
+    .join(' · '),
+  url: s.url,
+}));
 
 type Source = {
   text?: string;
@@ -40,6 +38,13 @@ type Source = {
   sectionTitle?: string;
   page?: number | null;
   url?: string;
+  lang?: string;
+  sourceType?: string;
+  binding?: boolean;
+  issuer?: string;
+  publishedAt?: string;
+  version?: string;
+  reference?: string;
   score?: number;
 };
 
@@ -54,7 +59,10 @@ type ToolInvocationLike = {
 // Lightweight, safe formatting (no HTML injection, no extra dependency)
 // Supports: **bold**, ### headings, bullet and numbered lists, [citations]
 // ---------------------------------------------------------------------------
-const CITATION = /^\[[^\]]*(CRA|Digitalsikkerhets|Article|Recital|Annex|§)[^\]]*\]$/;
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const CITATION = new RegExp(
+  `^\\[[^\\]]*(${[...SOURCES.map((s) => s.short), 'Article', 'Recital', 'Annex', '§'].map(escapeRegExp).join('|')})[^\\]]*\\]$`,
+);
 
 function renderInline(text: string): ReactNode[] {
   return text
@@ -193,6 +201,20 @@ function splitSource(src: Source): { label: string; body: string } {
   return { label: `Page ${src.page ?? '?'}`, body: text };
 }
 
+// e.g. "Guidance · ENISA · 2026-09 · not legally binding"
+function sourceFacts(src: Source): string {
+  return [
+    src.sourceType ? SOURCE_TYPE_LABEL[src.sourceType as SourceType] : '',
+    src.issuer,
+    src.reference,
+    src.publishedAt,
+    src.version,
+    src.binding === false ? 'not legally binding' : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
 const SOURCES_SHOWN = 8;
 
 function SourcesPanel({ sources }: { sources: Source[] }) {
@@ -219,6 +241,7 @@ function SourcesPanel({ sources }: { sources: Source[] }) {
                 </summary>
                 <div className="border-t border-slate-100 px-3 py-2">
                   <p className="whitespace-pre-line text-slate-600">{body}</p>
+                  {sourceFacts(src) && <p className="mt-2 text-xs text-slate-500">{sourceFacts(src)}</p>}
                   {src.url && (
                     <a
                       href={src.url}
@@ -256,7 +279,7 @@ function EmptyState({ onAsk }: { onAsk: (q: string) => void }) {
     <div className="space-y-6 rounded-2xl border border-slate-200 bg-white p-5 sm:p-6">
       <div>
         <h2 className="text-lg font-semibold text-slate-900">
-          Ask about product and organisational cybersecurity rules
+          Ask about cybersecurity and AI rules for products and organisations
         </h2>
         <p className="mt-1 text-sm text-slate-600">
           Answers are drawn only from the official texts below, with a citation for every key point.
@@ -289,14 +312,18 @@ function EmptyState({ onAsk }: { onAsk: (q: string) => void }) {
         <ul className="space-y-1 text-sm">
           {CORPUS.map((d) => (
             <li key={d.name}>
-              <a
-                href={d.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="font-medium text-cyan-700 hover:underline"
-              >
-                {d.name}
-              </a>{' '}
+              {d.url ? (
+                <a
+                  href={d.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="font-medium text-cyan-700 hover:underline"
+                >
+                  {d.name}
+                </a>
+              ) : (
+                <span className="font-medium text-slate-800">{d.name}</span>
+              )}{' '}
               <span className="text-slate-500">– {d.detail}</span>
             </li>
           ))}
@@ -322,9 +349,11 @@ export default function Page() {
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col px-4 sm:px-6">
       <header className="flex items-start justify-between gap-4 py-5">
         <div>
-          <h1 className="text-xl font-bold text-slate-900 sm:text-2xl">CRA &amp; Digital Security Act Assistant</h1>
+          <h1 className="text-xl font-bold text-slate-900 sm:text-2xl">
+            EU &amp; Norwegian Cyber and AI Regulation Assistant
+          </h1>
           <p className="text-sm text-slate-500">
-            EU Cyber Resilience Act and Norwegian digitalsikkerhetsloven, with cited sources.
+            EU and Norwegian cybersecurity and AI regulation, with cited sources.
           </p>
         </div>
         {messages.length > 0 && (

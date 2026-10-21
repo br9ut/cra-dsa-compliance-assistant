@@ -1,25 +1,28 @@
 /**
- * Chat route: RAG as a tool call over the CRA and the Norwegian
- * Digital Security Act (digitalsikkerhetsloven) and Regulation
- * (digitalsikkerhetsforskriften).
+ * Chat route: RAG as a tool call over the live sources in lib/sources.ts
+ * (EU and Norwegian cybersecurity legislation, plus related guidance as
+ * batches are added).
  *
  * The model decides when to call searchRegulations. The tool runs a vector
- * search in Upstash (optionally filtered to one document) and returns chunk
- * text plus citation metadata. The client renders these as sources.
+ * search in Upstash (optionally filtered to one document or source type) and
+ * returns chunk text plus citation metadata. The client renders these as
+ * sources.
  */
 import { openai } from '@ai-sdk/openai';
 import { streamText, tool, embed } from 'ai';
 import { Index } from '@upstash/vector';
 import { z } from 'zod';
+import { ACTIVE_SOURCES, SOURCE_TYPE_LABEL, versionLabel, type SourceType } from '@/lib/sources';
 
 const index = new Index();
 
 const TOP_K = 6;
-const DOC_NAMES = ['CRA', 'Digitalsikkerhetsloven', 'Digitalsikkerhetsforskriften'];
+const DOC_NAMES = ACTIVE_SOURCES.map((s) => s.short);
+const SOURCE_TYPES = [...new Set(ACTIVE_SOURCES.map((s) => s.sourceType))];
 
 // Section expansion settings
-const EXPAND_FROM_TOP = 3; // look at the top 3 results for split sections
-const MAX_SECTIONS_TO_EXPAND = 2; // expand at most 2 sections per search
+const EXPAND_FROM_TOP = TOP_K; // look at all results for split sections
+const MAX_SECTIONS_TO_EXPAND = 3; // expand at most 3 sections per search
 const MAX_PARTS_PER_SECTION = 10; // cap on parts fetched per section
 const PART_TAG = /\[part \d+\/\d+\]/;
 
@@ -29,22 +32,51 @@ const partNo = (text: unknown) => {
   return m ? parseInt(m[1], 10) : 0;
 };
 
-const SYSTEM_PROMPT = `You are a compliance assistant that answers questions about three legal texts:
-1. CRA – the EU Cyber Resilience Act, Regulation (EU) 2024/2847 (English)
-2. Digitalsikkerhetsloven – the Norwegian Digital Security Act (Norwegian)
-3. Digitalsikkerhetsforskriften – the Norwegian Digital Security Regulation (Norwegian)
+const LANG_NAME = { en: 'English', no: 'Norwegian' } as const;
+
+const sourceList = ACTIVE_SOURCES.map((s, i) => {
+  const notes = [
+    LANG_NAME[s.lang],
+    s.binding ? '' : `${SOURCE_TYPE_LABEL[s.sourceType].toLowerCase()}, not legally binding`,
+    versionLabel(s),
+  ].filter(Boolean);
+  return `${i + 1}. ${s.short} – ${s.description} (${notes.join('; ')})`;
+}).join('\n');
+
+const hasNonBinding = ACTIVE_SOURCES.some((s) => !s.binding);
+const versionedSources = ACTIVE_SOURCES.filter((s) => versionLabel(s));
+const scopeNotes = ACTIVE_SOURCES.filter((s) => s.scopeNote).map((s) => `- ${s.scopeNote}`);
+
+const SYSTEM_PROMPT = [
+  `You are a compliance assistant that answers questions about these sources:
+${sourceList}
 
 How to answer:
-- Always call the searchRegulations tool before answering a question about these laws. For comparisons or broad questions, call it several times with focused queries (for example once per law or per topic).
+- Always call the searchRegulations tool before answering a question about these sources. For comparisons or broad questions, call it several times with focused queries (for example once per law or per topic). Search first and write the answer afterwards; do not announce or describe your searches in the answer.
 - Answer ONLY from the retrieved text. If the retrieved text does not answer the question, say so plainly and suggest how the user could rephrase. Never fill gaps with general knowledge.
-- Cite every key statement inline in square brackets using the source header, for example [CRA – Article 14] or [Digitalsikkerhetsloven – § 2]. Use only sections that appear in the retrieved results.
-- Answer in the language the user writes in. When you rely on Norwegian text for an English answer, translate it faithfully and keep the Norwegian legal terms in brackets where helpful, e.g. "providers of essential services (tilbydere av samfunnsviktige tjenester)".
+- Cite every key statement inline in square brackets using the source name and section from the source header, for example [CRA – Article 14] or [Digitalsikkerhetsloven – § 2]. Use only sections that appear in the retrieved results. This applies in every language, including answers in Norwegian: a section number in a heading, in the running text or in a closing list of sources is not a citation, so each key statement still needs its own tag in square brackets. Example of a cited line in a Norwegian answer: "- Tilbyderen skal varsle uten unødig opphold [Digitalsikkerhetsloven – § 8]."
+- Answer in the language the user writes in. When you rely on Norwegian text for an English answer, translate it faithfully and keep the Norwegian legal terms in brackets where helpful, e.g. "providers of essential services (tilbydere av samfunnsviktige tjenester)". Norwegian answers use exactly the same citation tags as English ones (på norsk: hver rettslig påstand skal ha en kildehenvisning i hakeparentes, for eksempel [Digitalsikkerhetsloven – § 8]).
 - Be concise and practical: start with a direct answer in one or two sentences, then give the key details as a short list. List every stage, deadline, threshold and responsible party that the retrieved text provides.
-- Prefer Articles and § sections over Recitals. Use Recitals only to explain the purpose or intent behind a provision, and say that they are recitals.
-- Do not include URLs or markdown links in your answer. The sources panel already links to the official texts.
-- If the user asks about a law that is not one of the three texts (for example NIS2 or GDPR), say clearly that it is outside your sources. You may point to related provisions in the three texts if they are relevant.
+- Prefer Articles and § sections over Recitals. Use Recitals only to explain the purpose or intent behind a provision, and say that they are recitals.`,
+  hasNonBinding &&
+    `- Legislation is the only source of obligations. Guidance and preparatory works are not legally binding: use them to explain how a provision is interpreted or applied, say which kind of source it is (for example "ENISA guidance, not binding"), and never present a recommendation in guidance as a legal requirement. If guidance and legislation seem to differ, follow the legislation and point out the difference.`,
+  versionedSources.length > 0 &&
+    `- Text versions: ${versionedSources.map((s) => `${s.short} – ${versionLabel(s)}`).join('; ')}. Keep the citation tags short, without the version, and say once at the end of the answer which version of each cited text you used, using exactly these labels. Only call a text "consolidated" if its label says so. Consolidated texts and Lovdata texts are not the authentic versions; the authentic text is the one published in the Official Journal of the EU or in Norsk Lovtidend.`,
+  `- For EU acts, do not state whether they apply in Norway or have been incorporated into the EEA Agreement unless the retrieved text says so.`,
+  ...scopeNotes,
+  `- Do not include URLs or markdown links in your answer. The sources panel already links to the official texts.
+- If the user asks about a law or document that is not one of these sources (for example NIS2, or the text of the GDPR itself), first call searchRegulations for the same topic (for example "hendelsesvarsling" for incident reporting). Then say clearly in the first sentence that the law is outside your sources and do not describe its content. If the search found related provisions, point to the nearest ones with citations, making clear they are a different law and not a substitute (for example, for NIS2 incident reporting: the reporting duties in digitalsikkerhetsloven § 8 and § 11). Only name sections that appear in the search results. End the answer there (apart from the version line): do not offer to look anything up later, do not suggest rephrasing the question, and do not add any closing advice about the out-of-scope law (for example "consult the NIS2 text or the authorities for its deadlines").
 - You provide information, not legal advice. If asked whether a specific organisation is compliant, explain that you cannot assess that, then search and summarise the main obligations that would typically apply, and recommend confirming with legal counsel or the relevant authority.
-- If a question is unrelated to these laws, politely explain what you can help with.`;
+- If a question is unrelated to these sources, politely explain what you can help with.
+
+Final check before you send the answer:
+1. Every sentence or bullet that states what a source says ends with a tag such as [Digitalsikkerhetsloven – § 8], in every language. Section numbers in headings or in a closing source list do not count.
+2. If the question was about a law outside your sources, the last sentence before the version line is about the in-scope provisions you cited, not about the out-of-scope law.`,
+]
+  .filter(Boolean)
+  .join('\n');
+
+const quoted = (names: string[]) => names.map((n) => `'${n}'`).join(', ');
 
 export async function POST(req: Request) {
   const { messages } = await req.json();
@@ -56,22 +88,34 @@ export async function POST(req: Request) {
     tools: {
       searchRegulations: tool({
         description:
-          'Search the Cyber Resilience Act (CRA), the Norwegian Digital Security Act (digitalsikkerhetsloven) and the Norwegian Digital Security Regulation (digitalsikkerhetsforskriften). ' +
-          'Use this for any question about obligations, scope, definitions, reporting, incidents, vulnerabilities, security requirements, supervision, penalties or deadlines in these laws. ' +
+          `Search these sources: ${DOC_NAMES.join(', ')}. ` +
+          'Use this for any question about obligations, scope, definitions, reporting, incidents, vulnerabilities, security requirements, supervision, penalties or deadlines. ' +
           'The Norwegian texts are written in Norwegian, so when searching them, a query in Norwegian (e.g. "hendelsesvarsling", "styringssystem", "risikovurdering") often works best.',
         parameters: z.object({
           query: z.string().describe('A focused search query: the topic, term or sub-question to look up'),
-          // A plain string (not an enum) so an unexpected value such as "NIS2"
+          // Plain strings (not enums) so an unexpected value such as "NIS2"
           // cannot crash the request; unknown values are simply ignored.
           document: z
             .string()
             .optional()
+            .describe(`Optional: limit the search to one source: ${quoted(DOC_NAMES)}. Leave empty to search all sources.`),
+          sourceType: z
+            .string()
+            .optional()
             .describe(
-              "Optional: limit the search to one law: 'CRA', 'Digitalsikkerhetsloven' or 'Digitalsikkerhetsforskriften'. Leave empty to search all three.",
+              `Optional: limit the search to one kind of source: ${quoted(SOURCE_TYPES)}. Use 'legislation' to find binding obligations only. Leave empty to search all kinds.`,
             ),
         }),
-        execute: async ({ query, document: requested }) => {
-          const document = DOC_NAMES.find((d) => d.toLowerCase() === requested?.trim().toLowerCase());
+        execute: async ({ query, document: requestedDoc, sourceType: requestedType }) => {
+          const norm = (v?: string) => v?.trim().toLowerCase();
+          const document = DOC_NAMES.find((d) => d.toLowerCase() === norm(requestedDoc));
+          const sourceType = SOURCE_TYPES.find((t) => t === norm(requestedType)) as SourceType | undefined;
+          const filter = [
+            document && `doc = '${esc(document)}'`,
+            sourceType && `sourceType = '${sourceType}'`,
+          ]
+            .filter(Boolean)
+            .join(' AND ');
           const { embedding } = await embed({
             model: openai.embedding('text-embedding-3-small'),
             value: query,
@@ -80,7 +124,7 @@ export async function POST(req: Request) {
             vector: embedding,
             topK: TOP_K,
             includeMetadata: true,
-            ...(document ? { filter: `doc = '${document}'` } : {}),
+            ...(filter ? { filter } : {}),
           });
 
           // Section expansion: long Articles / § sections are split into parts.
@@ -131,6 +175,13 @@ export async function POST(req: Request) {
             sectionTitle: (h.metadata?.sectionTitle as string) ?? '',
             page: (h.metadata?.page as number) ?? null,
             url: (h.metadata?.url as string) ?? '',
+            lang: (h.metadata?.lang as string) ?? '',
+            sourceType: (h.metadata?.sourceType as string) ?? '',
+            binding: (h.metadata?.binding as boolean) ?? true,
+            issuer: (h.metadata?.issuer as string) ?? '',
+            publishedAt: (h.metadata?.publishedAt as string) ?? '',
+            version: (h.metadata?.version as string) ?? '',
+            reference: (h.metadata?.reference as string) ?? '',
             score: h.score,
           }));
         },
